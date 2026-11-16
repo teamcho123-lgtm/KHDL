@@ -13,10 +13,14 @@ from starlette.concurrency import run_in_threadpool
 
 from src.pipeline import StressAnalysisPipeline
 
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
 logger = logging.getLogger(__name__)
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1024 * 1024
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "hparams_inference.yaml"
+FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
 pipeline: Optional[StressAnalysisPipeline] = None
 
 
@@ -48,8 +52,11 @@ app.add_middleware(
 
 
 async def _save_upload(file: UploadFile) -> str:
-    """Write a bounded upload to a temporary WAV path and clean up on error."""
-    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    """Write a bounded upload to a temporary audio path preserving suffix and clean up on error."""
+    suffix = Path(file.filename).suffix if file.filename else ".wav"
+    if not suffix or len(suffix) > 8:
+        suffix = ".wav"
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     path = handle.name
     total = 0
     try:
@@ -135,3 +142,78 @@ async def analyze_stress(
         raise HTTPException(status_code=500, detail="Audio analysis failed") from exc
     finally:
         _remove_temp(tmp_path)
+
+
+@app.get("/api/v1/baselines")
+def list_baselines():
+    """List all registered user baseline profiles."""
+    if pipeline is None:
+        raise HTTPException(status_code=503, detail="Pipeline not initialized")
+    profiles = []
+    base_dir = str(pipeline.baseline_dir)
+    if os.path.isdir(base_dir):
+        for f in os.listdir(base_dir):
+            if f.endswith("_profile.npz"):
+                profiles.append(f[:-12])
+    return {"registered_users": sorted(profiles)}
+
+
+@app.get("/api/v1/samples")
+def list_samples():
+    """List available demo audio samples."""
+    sample_candidates = [
+        {
+            "id": "calm_male",
+            "name": "Nam - Bình tĩnh (Actor 01 Calm)",
+            "path": "data/raw/RAVDESS/Actor_01/03-01-02-01-01-01-01.wav",
+            "expected": "CALM",
+        },
+        {
+            "id": "angry_male",
+            "name": "Nam - Giận dữ (Actor 01 Angry)",
+            "path": "data/raw/RAVDESS/Actor_01/03-01-05-01-02-01-01.wav",
+            "expected": "HIGH_STRESS",
+        },
+        {
+            "id": "fearful_female",
+            "name": "Nữ - Sợ hãi (Actor 02 Fearful)",
+            "path": "data/raw/RAVDESS/Actor_02/03-01-06-01-01-01-02.wav",
+            "expected": "HIGH_STRESS",
+        },
+    ]
+    root = Path(__file__).resolve().parents[1]
+    available = []
+    for s in sample_candidates:
+        full_path = root / s["path"]
+        if full_path.is_file():
+            available.append({
+                "id": s["id"],
+                "name": s["name"],
+                "expected": s["expected"],
+                "url": f"/api/v1/sample-audio/{s['id']}",
+            })
+    return {"samples": available}
+
+
+@app.get("/api/v1/sample-audio/{sample_id}")
+def get_sample_audio(sample_id: str):
+    """Retrieve demo audio sample by ID."""
+    root = Path(__file__).resolve().parents[1]
+    mapping = {
+        "calm_male": "data/raw/RAVDESS/Actor_01/03-01-02-01-01-01-01.wav",
+        "angry_male": "data/raw/RAVDESS/Actor_01/03-01-05-01-02-01-01.wav",
+        "fearful_female": "data/raw/RAVDESS/Actor_02/03-01-06-01-01-01-02.wav",
+    }
+    rel_path = mapping.get(sample_id)
+    if not rel_path:
+        raise HTTPException(status_code=404, detail="Sample not found")
+    full_path = root / rel_path
+    if not full_path.is_file():
+        raise HTTPException(status_code=404, detail="Sample file not found on disk")
+    return FileResponse(str(full_path), media_type="audio/wav")
+
+
+# Mount static frontend files at root (served after API endpoints)
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+

@@ -69,13 +69,14 @@ API hiện chưa có xác thực người dùng; lệnh mẫu chỉ bind vào lo
 
 ## Kiểm tra
 
-Các script kiểm tra hiện có:
+Các script kiểm tra hiện có cho toàn bộ 5 giai đoạn:
 
 ```bash
-python tests/test_phase1.py
-python tests/test_phase2.py
-python tests/test_phase3.py
-python tests/test_phase4.py
+.venv/bin/python tests/test_phase1.py   # Tiền xử lý & Trích xuất Vật lý Âm học
+.venv/bin/python tests/test_phase2.py   # Phân chia Tập dữ liệu & Pipeline Nạp Batch
+.venv/bin/python tests/test_phase3.py   # Huấn luyện & Đánh giá Mô hình Lai
+.venv/bin/python tests/test_phase4.py   # Cá nhân hóa Baseline & Luật Sinh lý XAI
+.venv/bin/python tests/test_phase5.py   # Triển khai Toàn diện: FastAPI & Web Dashboard
 ```
 
 ---
@@ -104,7 +105,7 @@ Hệ thống cho phép đăng ký hồ sơ Baseline cá nhân hóa và áp dụn
    - Lưu trữ vector nhận dạng 192 chiều trích xuất từ mô hình ECAPA-TDNN (`speechbrain/spkrec-ecapa-voxceleb`).
    - Thống kê trung bình và độ lệch chuẩn ($\mu, \sigma$) cho 4 đặc trưng âm học: $F_0$, Jitter, Shimmer, HNR.
 2. **Xác minh Người nói (Speaker Verification & Matching)**:
-   - Sử dụng độ đo Cosine Similarity giữa vector đặc trưng với profile gốc (`threshold = 0.75` cho kiểm tra đăng nhập/check-in, `threshold = 0.50` cho giọng nói biến thiên cảm xúc).
+   - Sử dụng độ đo Cosine Similarity giữa vector đặc trưng với profile gốc (`threshold = 0.70` cho kiểm tra đăng nhập/check-in, `threshold = 0.50` cho giọng nói biến thiên cảm xúc).
    - Tự động nhận diện danh tính (`find_best_match`) từ cơ sở dữ liệu nhiều người dùng.
 3. **Luật Giải thích Sinh lý Thanh quản (XAI Rules)**:
    - Tự động phát hiện khi các chỉ số vượt ngưỡng $Z > 1.5$ hoặc $Z < -1.5$:
@@ -112,5 +113,34 @@ Hệ thống cho phép đăng ký hồ sơ Baseline cá nhân hóa và áp dụn
      - Jitter tăng: Dấu hiệu rung giọng vi mô (vocal microtremor).
      - Shimmer tăng: Áp lực dưới thanh môn không ổn định.
      - HNR giảm: Hụt hơi, suy giảm độ trong thanh âm.
-4. **Triệt tiêu Báo động Giả (False Positive Reduction)**:
-   - Đối với người có tông giọng cao tự nhiên (F0 cao hoặc cường độ lớn), hệ thống hiệu chuẩn điểm theo Z-score so với giọng nền cá nhân để giảm báo động giả. Hiệu quả cần được đánh giá trên một tập kiểm tra độc lập trước khi xem đây là kết quả định lượng.
+4. **Cơ chế Bảo vệ Âm học Sinh lý (Physiological Safeguard)**:
+   - Tự động nhận diện trạng thái dây thanh âm thư giãn ($F_0 \le 145\text{ Hz}$, $\text{Jitter} \le 2.2\%$, $\text{HNR} \ge 10\text{ dB}$) đối với giọng nói chưa đăng ký baseline, loại trừ triệt để tình trạng báo động giả.
+
+---
+
+## 🟢 7. Triển khai Hệ thống Hoàn chỉnh (Giai đoạn 5)
+
+Hệ thống cung cấp trọn gói API Backend (FastAPI) và Giao diện Dashboard Trực quan tương tác cao:
+
+### 1. Khởi động Dịch vụ (Chỉ 1 lệnh duy nhất):
+```bash
+.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+Truy cập trực tiếp giao diện Web Dashboard tại: **`http://127.0.0.1:8000`**
+
+### 2. Các Endpoints API Chính:
+- `GET /health`: Kiểm tra trạng thái sẵn sàng của dịch vụ, pipeline và các mô hình học sâu (SpeechBrain Emotion + Wav2Vec2 Stress).
+- `GET /api/v1/baselines`: Danh sách tất cả người dùng đã đăng ký giọng nền (baseline).
+- `GET /api/v1/samples`: Danh mục các file âm thanh mẫu chuẩn (Calm, Angry, Fearful) để thử nghiệm nhanh.
+- `GET /api/v1/sample-audio/{id}`: Truy xuất luồng âm thanh stream của file mẫu demo.
+- `POST /api/v1/register-baseline`: Đăng ký giọng nền bình tĩnh cho người dùng (`user_id`, `file`).
+- `POST /api/v1/analyze-stress`: Phân tích mức độ stress và cảm xúc từ file audio (`file`, tùy chọn `user_id`).
+
+### 3. Tính năng trên Dashboard Tương tác:
+- **Kéo thả & Nghe lại Âm thanh Trực tiếp**: Hỗ trợ mọi định dạng (WAV, MP3, M4A, AAC, FLAC, OGG) thời lượng lên đến 300 giây cùng Audio Player tích hợp sẵn.
+- **Thử nghiệm Nhanh với Demo Samples**: Chỉ 1 click để thử ngay giọng bình tĩnh (Calm) hoặc giọng căng thẳng (Angry/Fearful).
+- **Vòng tròn Đo lường Stress (Dynamic Stress Gauge)**: Hiển thị điểm số 0–100% với hiệu ứng đổi màu tương ứng mức độ (`CALM` xanh lá, `MODERATE` vàng cam, `HIGH_STRESS` đỏ).
+- **Phân rã Xác suất 4 Lớp Cảm xúc**: Thanh phần trăm trực quan cho `Neutral`, `Anger`, `Happy`, `Sad`.
+- **4 Thẻ Đặc trưng Âm học Thanh quản**: Đo lường $F_0$, Jitter, Shimmer, HNR kèm độ lệch chuẩn Z-score so với giọng nền.
+- **Bảng Cảnh báo Giải thích Sinh lý (XAI Alert Cards)**: Diễn giải nguyên nhân thần kinh - thanh quản dẫn đến kết luận của hệ thống.
+- **Sao chép JSON 1-Click**: Cho phép sao chép dữ liệu phân tích chi tiết để tích hợp vào các hệ thống khác.

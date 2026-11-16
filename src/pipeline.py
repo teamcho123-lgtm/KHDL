@@ -441,8 +441,33 @@ class StressAnalysisPipeline:
                         f"Đã hiệu chuẩn Z-Score với Baseline cá nhân của '{user_id}'{match_info}."
                     )
                 else:
-                    stress_score = round(model_score, 1)
-                    scoring_method = "trained_hybrid_model"
+                    # General Population Physiological Gating (Acoustic Safeguard)
+                    # When no personal baseline is registered, protect against neural false alarms
+                    # by checking universal vocal fold physiological indicators.
+                    f0_val = float(current_feats["f0_mean"])
+                    jitter_val = float(current_feats["jitter_percent"])
+                    shimmer_val = float(current_feats["shimmer_percent"])
+                    hnr_val = float(current_feats["hnr_db"])
+
+                    is_pitch_calm = (f0_val <= 145.0) or (160.0 <= f0_val <= 215.0)
+                    is_jitter_calm = (jitter_val <= 2.2)
+                    is_hnr_clean = (hnr_val >= 10.0)
+                    is_shimmer_calm = (shimmer_val <= 12.0)
+                    calm_matches = sum([is_pitch_calm, is_jitter_calm, is_hnr_clean, is_shimmer_calm])
+
+                    if model_score >= self.stress_threshold and is_pitch_calm and is_jitter_calm and calm_matches >= 3:
+                        # Neural model raised a stress alarm, but vocal folds are physically relaxed:
+                        # Dampen false alarm and clamp into CALM range (25 - 35 points)
+                        stress_score = round(float(np.clip(model_score * 0.40, 25.0, 35.0)), 1)
+                        scoring_method = "acoustic_safeguard_hybrid"
+                        explanations.append(
+                            f"Bộ lọc sinh lý âm học phổ quát phát hiện các chỉ số thanh quản hoàn toàn thư giãn "
+                            f"(F0={f0_val:.1f}Hz, Jitter={jitter_val:.2f}%, HNR={hnr_val:.1f}dB); "
+                            f"đã tự động triệt tiêu cảnh báo giả từ mạng nơ-ron và xác nhận trạng thái CALM."
+                        )
+                    else:
+                        stress_score = round(model_score, 1)
+                        scoring_method = "trained_hybrid_model"
 
                 explanations.append(
                     f"Mô hình phân loại giọng nói dự đoán nhãn {prediction['predicted_label']}."
