@@ -1,0 +1,26 @@
+# Inference and API configuration. Paths are relative to the repository root.
+device: cpu # set cuda or cuda:0 to use a GPU
+sample_rate: 16000
+max_audio_seconds: 30
+
+metricgan_hub: speechbrain/metricgan-plus-voicebank
+metricgan_savedir: pretrained_models/metricgan-plus-voicebank
+
+ecapa_hub: speechbrain/spkrec-ecapa-voxceleb
+ecapa_savedir: pretrained_models/spkrec-ecapa-voxceleb
+
+enable_emotion: true
+emotion_hub: speechbrain/emotion-recognition-wav2vec2-IEMOCAP
+emotion_savedir: pretrained_models/emotion-recognition-wav2vec2-IEMOCAP
+emotion_pymodule_file: custom_interface.py
+emotion_classname: CustomEncoderWav2vec2Classifier
+
+# Stress inference is enabled automatically after train.py creates a checkpoint.
+stress_hparams: configs/hparams_train.yaml
+stress_checkpoint_dir: results/stress_wav2vec2/1986/save
+
+baseline_dir: data/baseline_profiles
+speaker_similarity_threshold: 0.50
+stress_threshold: 50.0
+high_stress_threshold: 70.0
+zscore_alert_threshold: 1.5

@@ -1,0 +1,56 @@
+# Hybrid stress classifier training configuration.
+seed: 1986
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+
+output_folder: !ref results/stress_wav2vec2/<seed>
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+
+data_folder: data/manifests
+train_json: !ref <data_folder>/train.json
+valid_json: !ref <data_folder>/valid.json
+test_json: !ref <data_folder>/test.json
+sample_rate: 16000
+
+number_of_epochs: 2
+max_batch_length: 25.0
+num_buckets: 10
+num_workers: 0
+lr: 0.001
+lr_wav2vec2: 0.00001
+weight_decay: 0.0001
+lr_factor: 0.5
+lr_patience: 2
+lr_min_delta: 0.0001
+min_learning_rate: 0.0000001
+auto_mix_prec: False
+
+wav2vec2_hub: facebook/wav2vec2-base
+wav2vec2: !new:speechbrain.integrations.huggingface.wav2vec2.Wav2Vec2
+    source: !ref <wav2vec2_hub>
+    save_path: !ref <save_folder>/wav2vec2
+    output_norm: False
+    freeze: True
+    freeze_feature_extractor: True
+
+output_mlp: !new:speechbrain.nnet.linear.Linear
+    input_size: 773
+    n_neurons: 2
+    bias: True
+
+modules:
+    wav2vec2: !ref <wav2vec2>
+    output_mlp: !ref <output_mlp>
+
+compute_cost: !new:torch.nn.NLLLoss
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <number_of_epochs>
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        epoch_counter: !ref <epoch_counter>
+        wav2vec2: !ref <wav2vec2>
+        output_mlp: !ref <output_mlp>

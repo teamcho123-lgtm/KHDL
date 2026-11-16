@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Speech Stress & Emotion Analyzer</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">VOICE ANALYSIS</p>
+          <h1>Phân tích giọng nói</h1>
+          <p class="subtitle">Cảm xúc, baseline cá nhân và các chỉ số âm học.</p>
+        </div>
+        <div id="health" class="health" role="status" aria-live="polite">
+          <span class="health-dot"></span><span>Đang kiểm tra API</span>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <form id="analysis-form" class="panel controls">
+          <h2>Audio đầu vào</h2>
+          <label for="api-url">Địa chỉ API</label>
+          <input id="api-url" type="url" value="http://127.0.0.1:8000" required />
+
+          <label for="audio-file">File giọng nói</label>
+          <input id="audio-file" type="file" accept="audio/wav,audio/x-wav,audio/flac,audio/ogg,.wav,.flac,.ogg" required />
+          <p id="file-meta" class="hint">Chọn WAV, FLAC hoặc OGG tối đa 20 MiB, dài tối đa 30 giây.</p>
+
+          <label for="user-id">Mã người dùng <span class="optional">(không bắt buộc)</span></label>
+          <input id="user-id" type="text" maxlength="64" placeholder="ví dụ: user_01" autocomplete="off" />
+          <p class="hint">Chỉ dùng chữ, số, gạch dưới hoặc gạch ngang.</p>
+
+          <div class="actions">
+            <button id="analyze-button" class="primary" type="submit">Phân tích audio</button>
+            <button id="baseline-button" class="secondary" type="button">Đăng ký baseline</button>
+          </div>
+          <p class="hint">Baseline nên là đoạn nói bình tĩnh, tối thiểu 1 giây. API sẽ kiểm tra người nói khi phân tích theo mã người dùng.</p>
+          <p id="message" class="message" role="status" aria-live="polite"></p>
+        </form>
+
+        <section class="panel output" aria-labelledby="result-heading">
+          <div class="result-heading">
+            <div>
+              <p class="eyebrow">KẾT QUẢ</p>
+              <h2 id="result-heading">Chưa có kết quả</h2>
+            </div>
+            <span id="status-badge" class="badge hidden"></span>
+          </div>
+          <div id="summary" class="summary empty">Chọn một file audio rồi bấm “Phân tích audio”.</div>
+          <div id="details" class="details"></div>
+          <details class="raw-result">
+            <summary>JSON đầy đủ</summary>
+            <pre id="json-result">{}</pre>
+          </details>
+        </section>
+      </section>
+
+      <footer>Điểm stress là ước lượng từ mô hình hoặc baseline, không phải chẩn đoán y khoa.</footer>
+    </main>
+    <script src="app.js" defer></script>
+  </body>
+</html>

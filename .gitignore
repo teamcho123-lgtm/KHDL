@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+
+# Downloaded model weights and Hugging Face cache.
+/pretrained_models/
+/wav2vec2_checkpoints/
+
+# Datasets, generated manifests, and user voice profiles.
+/data/raw/
+/data/manifests/
+/data/baseline_profiles/
+
+# Training checkpoints, logs, and evaluation output.
+/results/
