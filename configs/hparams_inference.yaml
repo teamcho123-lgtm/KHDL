@@ -1,7 +1,7 @@
 # Inference and API configuration. Paths are relative to the repository root.
 device: cpu # set cuda or cuda:0 to use a GPU
 sample_rate: 16000
-max_audio_seconds: 30
+max_audio_seconds: 300.0
 
 metricgan_hub: speechbrain/metricgan-plus-voicebank
 metricgan_savedir: pretrained_models/metricgan-plus-voicebank

@@ -145,25 +145,43 @@ class StressAnalysisPipeline:
     def ready(self):
         return True
 
-    def _validate_audio(self, audio_path: str, min_seconds: float = 0.5):
+    def _read_audio_universal(self, audio_path: str):
+        """Read any audio file (WAV, FLAC, OGG, MP3, AAC, M4A, WebM) into float32 mono."""
         if not os.path.isfile(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
         try:
             audio, sample_rate = sf.read(
                 audio_path, dtype="float32", always_2d=True
             )
-        except Exception as exc:
-            raise ValueError("Unsupported or invalid audio file") from exc
-        duration = len(audio) / float(sample_rate)
+            mono = audio.mean(axis=1)
+            is_native = True
+        except Exception:
+            try:
+                import av
+                container = av.open(audio_path)
+                stream = container.streams.audio[0]
+                frames = [f.to_ndarray() for f in container.decode(stream)]
+                if not frames:
+                    raise ValueError("Audio file contains no decodable audio frames")
+                audio = np.concatenate(frames, axis=1)
+                mono = audio.mean(axis=0).astype(np.float32)
+                sample_rate = stream.rate
+                is_native = False
+            except Exception as av_exc:
+                raise ValueError(f"Unsupported or invalid audio file: {av_exc}") from av_exc
+        return mono, sample_rate, is_native
+
+    def _validate_and_prepare_audio(self, audio_path: str, min_seconds: float = 0.5):
+        mono, sample_rate, is_native = self._read_audio_universal(audio_path)
+        duration = len(mono) / float(sample_rate)
         if duration < min_seconds:
             raise ValueError(f"Audio must be at least {min_seconds:g} seconds long")
         if duration > self.max_audio_seconds:
             raise ValueError(
-                f"Audio exceeds the {self.max_audio_seconds:g} second limit"
+                f"Audio exceeds the {self.max_audio_seconds:g} second limit ({duration:.1f}s > {self.max_audio_seconds:g}s)"
             )
-        if audio.size == 0 or not np.isfinite(audio).all():
+        if mono.size == 0 or not np.isfinite(mono).all():
             raise ValueError("Audio is empty or contains invalid samples")
-        mono = audio.mean(axis=1)
         if float(np.sqrt(np.mean(np.square(mono)))) < 1e-6:
             raise ValueError("Audio is silent")
 
@@ -172,6 +190,24 @@ class StressAnalysisPipeline:
             waveform = torchaudio.functional.resample(
                 waveform, orig_freq=sample_rate, new_freq=self.sample_rate
             )
+
+        temp_wav_path = None
+        if not is_native or sample_rate != self.sample_rate:
+            descriptor, temp_wav_path = tempfile.mkstemp(
+                prefix="standard_16k_", suffix=".wav"
+            )
+            os.close(descriptor)
+            sf.write(temp_wav_path, waveform.numpy(), self.sample_rate)
+            effective_wav_path = temp_wav_path
+        else:
+            effective_wav_path = audio_path
+
+        return waveform, effective_wav_path, temp_wav_path
+
+    def _validate_audio(self, audio_path: str, min_seconds: float = 0.5):
+        waveform, _, temp_wav = self._validate_and_prepare_audio(audio_path, min_seconds)
+        if temp_wav and os.path.exists(temp_wav):
+            os.remove(temp_wav)
         return waveform
 
     @staticmethod
@@ -186,42 +222,45 @@ class StressAnalysisPipeline:
     def register_baseline(self, user_id: str, calm_audio_path: str) -> Dict[str, Any]:
         """Register a vocal baseline for a stable, non-silent recording."""
         self._validate_user_id(user_id)
-        self._validate_audio(calm_audio_path, min_seconds=1.0)
-
-        speaker_emb = self.calibrator.extract_embedding(calm_audio_path)
-        acoustic_feats = self.acoustic_extractor.extract_features(calm_audio_path)
-        if acoustic_feats["f0_mean"] <= 0:
-            raise ValueError("Baseline recording does not contain enough voiced speech")
-
-        baseline_profile = {
-            "speaker_embedding": speaker_emb.astype(np.float32),
-            "f0_mean": np.float32(acoustic_feats["f0_mean"]),
-            "f0_std": np.float32(max(acoustic_feats["f0_std"], 15.0)),
-            "jitter_mean": np.float32(acoustic_feats["jitter_percent"]),
-            "jitter_std": np.float32(max(acoustic_feats["jitter_percent"] * 0.35, 0.2)),
-            "shimmer_mean": np.float32(acoustic_feats["shimmer_percent"]),
-            "shimmer_std": np.float32(max(acoustic_feats["shimmer_percent"] * 0.35, 0.5)),
-            "hnr_mean": np.float32(acoustic_feats["hnr_db"]),
-            "hnr_std": np.float32(max(abs(acoustic_feats["hnr_db"]) * 0.2, 2.0)),
-        }
-
-        profile_path = os.path.join(self.baseline_dir, f"{user_id}_profile.npz")
-        descriptor, temporary_path = tempfile.mkstemp(
-            prefix=f".{user_id}_", suffix=".npz", dir=self.baseline_dir
-        )
-        os.close(descriptor)
+        waveform, effective_wav, temp_wav = self._validate_and_prepare_audio(calm_audio_path, min_seconds=1.0)
         try:
-            np.savez(temporary_path, **baseline_profile)
-            os.replace(temporary_path, profile_path)
-        finally:
-            if os.path.exists(temporary_path):
-                os.remove(temporary_path)
+            speaker_emb = self.calibrator.extract_embedding(effective_wav)
+            acoustic_feats = self.acoustic_extractor.extract_features(effective_wav)
+            if acoustic_feats["f0_mean"] <= 0:
+                raise ValueError("Baseline recording does not contain enough voiced speech")
 
-        return {
-            "user_id": user_id,
-            "profile_saved": True,
-            "baseline_features": acoustic_feats,
-        }
+            baseline_profile = {
+                "speaker_embedding": speaker_emb.astype(np.float32),
+                "f0_mean": np.float32(acoustic_feats["f0_mean"]),
+                "f0_std": np.float32(max(acoustic_feats["f0_std"], 15.0)),
+                "jitter_mean": np.float32(acoustic_feats["jitter_percent"]),
+                "jitter_std": np.float32(max(acoustic_feats["jitter_percent"] * 0.35, 0.2)),
+                "shimmer_mean": np.float32(acoustic_feats["shimmer_percent"]),
+                "shimmer_std": np.float32(max(acoustic_feats["shimmer_percent"] * 0.35, 0.5)),
+                "hnr_mean": np.float32(acoustic_feats["hnr_db"]),
+                "hnr_std": np.float32(max(abs(acoustic_feats["hnr_db"]) * 0.2, 2.0)),
+            }
+
+            profile_path = os.path.join(self.baseline_dir, f"{user_id}_profile.npz")
+            descriptor, temporary_path = tempfile.mkstemp(
+                prefix=f".{user_id}_", suffix=".npz", dir=self.baseline_dir
+            )
+            os.close(descriptor)
+            try:
+                np.savez(temporary_path, **baseline_profile)
+                os.replace(temporary_path, profile_path)
+            finally:
+                if os.path.exists(temporary_path):
+                    os.remove(temporary_path)
+
+            return {
+                "user_id": user_id,
+                "profile_saved": True,
+                "baseline_features": acoustic_feats,
+            }
+        finally:
+            if temp_wav and os.path.exists(temp_wav):
+                os.remove(temp_wav)
 
     def load_baseline(self, user_id: str) -> Optional[Dict[str, Any]]:
         self._validate_user_id(user_id)
@@ -259,7 +298,7 @@ class StressAnalysisPipeline:
         if self.emotion_model is None:
             return None
         probabilities, _, _, labels = self.emotion_model.classify_file(audio_path)
-        probabilities = probabilities.reshape(-1).exp().cpu()
+        probabilities = probabilities.reshape(-1).cpu()
         label = labels[0] if labels else None
         label_encoder = getattr(self.emotion_model.hparams, "label_encoder", None)
         index_to_label = getattr(label_encoder, "ind2lab", {})
@@ -268,9 +307,9 @@ class StressAnalysisPipeline:
         ]
         return {
             "label": str(label) if label is not None else None,
-            "confidence": float(probabilities.max().item()),
+            "confidence": round(float(probabilities.max().item()), 4),
             "probabilities": {
-                name: float(probability.item())
+                name: round(float(probability.item()), 4)
                 for name, probability in zip(probability_labels, probabilities)
             },
         }
@@ -284,167 +323,171 @@ class StressAnalysisPipeline:
         """Analyze a speech recording without overstating uncalibrated results."""
         start_time = time.time()
         request_id = f"req_{uuid.uuid4().hex[:8]}"
-        waveform = self._validate_audio(audio_path)
-        current_feats = self.acoustic_extractor.extract_features(audio_path)
-        if current_feats["f0_mean"] <= 0:
-            raise ValueError("Audio does not contain enough voiced speech")
+        waveform, effective_wav, temp_wav = self._validate_and_prepare_audio(audio_path)
+        try:
+            current_feats = self.acoustic_extractor.extract_features(effective_wav)
+            if current_feats["f0_mean"] <= 0:
+                raise ValueError("Audio does not contain enough voiced speech")
 
-        speaker_info = {
-            "user_id": user_id or "anonymous",
-            "verified": None,
-            "similarity_score": None,
-        }
-        baseline = None
-        if user_id:
-            self._validate_user_id(user_id)
-            baseline = self.load_baseline(user_id)
-
-        if baseline is not None and verify_speaker:
-            verified, similarity = self.calibrator.verify_speaker(
-                audio_path,
-                baseline["speaker_embedding"],
-                threshold=self.speaker_similarity_threshold,
-            )
-            speaker_info["verified"] = verified
-            speaker_info["similarity_score"] = round(similarity, 3)
-
-        emotion = None
-        if self.emotion_model is not None:
-            try:
-                emotion = self._classify_emotion(audio_path)
-            except Exception:
-                logger.exception("Emotion inference failed for request %s", request_id)
-
-        if baseline is not None and verify_speaker and speaker_info["verified"] is False:
+            speaker_info = {
+                "user_id": user_id or "anonymous",
+                "verified": None,
+                "similarity_score": None,
+            }
             baseline = None
+            if user_id:
+                self._validate_user_id(user_id)
+                baseline = self.load_baseline(user_id)
 
-        explanations = []
-        breakdown = {}
-        z_scores = []
-        if baseline is not None:
-            metric_specs = [
-                ("f0_mean_hz", "f0_mean", "F0", 1),
-                ("jitter_percent", "jitter_mean", "Jitter", 1),
-                ("shimmer_percent", "shimmer_mean", "Shimmer", 1),
-                ("hnr_db", "hnr_mean", "HNR", -1),
-            ]
-            std_keys = {
-                "f0_mean_hz": "f0_std",
-                "jitter_percent": "jitter_std",
-                "shimmer_percent": "shimmer_std",
-                "hnr_db": "hnr_std",
-            }
-            for output_key, baseline_key, label, direction in metric_specs:
-                value_key = "f0_mean" if output_key == "f0_mean_hz" else output_key
-                value = float(current_feats[value_key])
-                center = float(baseline[baseline_key])
-                deviation = max(float(baseline[std_keys[output_key]]), 1e-6)
-                z_value = (value - center) / deviation
-                breakdown[output_key] = {
-                    "value": value,
-                    "baseline": round(center, 3),
-                    "z_score": round(z_value, 3),
-                }
-                if direction * z_value >= self.zscore_alert_threshold:
-                    if output_key == "f0_mean_hz":
-                        explanations.append(
-                            f"Cao độ giọng nói (F0) tăng vọt +{z_value:.2f} SD so với trạng thái bình tĩnh (Dây thanh căng cứng)."
-                        )
-                    elif output_key == "jitter_percent":
-                        explanations.append(
-                            f"Độ rung tần số chu kỳ (Jitter) vượt ngưỡng ổn định (+{z_value:.2f} SD, dấu hiệu rung giọng vi mô/Microtremor)."
-                        )
-                    elif output_key == "shimmer_percent":
-                        explanations.append(
-                            f"Biến thiên biên độ vi mô (Shimmer) bất thường (+{z_value:.2f} SD, áp lực dưới thanh môn không ổn định)."
-                        )
-                    elif output_key == "hnr_db":
-                        explanations.append(
-                            f"Tỷ lệ hài trên nhiễu (HNR) sụt giảm mạnh ({z_value:.2f} SD, dấu hiệu hụt hơi hoặc suy giảm độ trong thanh âm)."
-                        )
-                z_scores.append(direction * z_value)
-        else:
-            breakdown = {
-                "f0_mean_hz": {"value": current_feats["f0_mean"], "baseline": None, "z_score": None},
-                "jitter_percent": {"value": current_feats["jitter_percent"], "baseline": None, "z_score": None},
-                "shimmer_percent": {"value": current_feats["shimmer_percent"], "baseline": None, "z_score": None},
-                "hnr_db": {"value": current_feats["hnr_db"], "baseline": None, "z_score": None},
-            }
-
-        if self.stress_model is not None:
-            prediction = self.stress_model.predict(
-                waveform, self.acoustic_extractor.get_feature_vector(audio_path)
-            )
-            model_score = prediction["stress_probability"] * 100.0
-            confidence = round(prediction["confidence"], 3)
-
-            if baseline is not None and speaker_info.get("verified") is not False:
-                # Calibrated Fusion: Adjust model score with personal baseline Z-scores
-                # Prevents false positives for users who naturally speak at high pitch or loud intensity
-                avg_z = float(np.mean(z_scores)) if z_scores else 0.0
-                if avg_z <= 1.0:
-                    # Acoustic metrics within normal calm range: apply baseline dampening to reduce false positives
-                    dampening = 0.85 + 0.15 * max(-1.0, min(1.0, avg_z))
-                    calibrated_score = model_score * dampening
-                else:
-                    # Significant acoustic divergence: elevate stress score proportionally
-                    z_boost = 100.0 / (1.0 + np.exp(-1.5 * (avg_z - 1.5)))
-                    calibrated_score = 0.50 * model_score + 0.50 * z_boost
-                stress_score = round(float(np.clip(calibrated_score, 0.0, 100.0)), 1)
-                scoring_method = "calibrated_hybrid_model"
-                match_info = (
-                    f" (Độ khớp giọng {speaker_info['similarity_score']})"
-                    if speaker_info.get("similarity_score") is not None
-                    else ""
+            if baseline is not None and verify_speaker:
+                verified, similarity = self.calibrator.verify_speaker(
+                    effective_wav,
+                    baseline["speaker_embedding"],
+                    threshold=self.speaker_similarity_threshold,
                 )
+                speaker_info["verified"] = verified
+                speaker_info["similarity_score"] = round(similarity, 3)
+
+            emotion = None
+            if self.emotion_model is not None:
+                try:
+                    emotion = self._classify_emotion(effective_wav)
+                except Exception:
+                    logger.exception("Emotion inference failed for request %s", request_id)
+
+            if baseline is not None and verify_speaker and speaker_info["verified"] is False:
+                baseline = None
+
+            explanations = []
+            breakdown = {}
+            z_scores = []
+            if baseline is not None:
+                metric_specs = [
+                    ("f0_mean_hz", "f0_mean", "F0", 1),
+                    ("jitter_percent", "jitter_mean", "Jitter", 1),
+                    ("shimmer_percent", "shimmer_mean", "Shimmer", 1),
+                    ("hnr_db", "hnr_mean", "HNR", -1),
+                ]
+                std_keys = {
+                    "f0_mean_hz": "f0_std",
+                    "jitter_percent": "jitter_std",
+                    "shimmer_percent": "shimmer_std",
+                    "hnr_db": "hnr_std",
+                }
+                for output_key, baseline_key, label, direction in metric_specs:
+                    value_key = "f0_mean" if output_key == "f0_mean_hz" else output_key
+                    value = float(current_feats[value_key])
+                    center = float(baseline[baseline_key])
+                    deviation = max(float(baseline[std_keys[output_key]]), 1e-6)
+                    z_value = (value - center) / deviation
+                    breakdown[output_key] = {
+                        "value": value,
+                        "baseline": round(center, 3),
+                        "z_score": round(z_value, 3),
+                    }
+                    if direction * z_value >= self.zscore_alert_threshold:
+                        if output_key == "f0_mean_hz":
+                            explanations.append(
+                                f"Cao độ giọng nói (F0) tăng vọt +{z_value:.2f} SD so với trạng thái bình tĩnh (Dây thanh căng cứng)."
+                            )
+                        elif output_key == "jitter_percent":
+                            explanations.append(
+                                f"Độ rung tần số chu kỳ (Jitter) vượt ngưỡng ổn định (+{z_value:.2f} SD, dấu hiệu rung giọng vi mô/Microtremor)."
+                            )
+                        elif output_key == "shimmer_percent":
+                            explanations.append(
+                                f"Biến thiên biên độ vi mô (Shimmer) bất thường (+{z_value:.2f} SD, áp lực dưới thanh môn không ổn định)."
+                            )
+                        elif output_key == "hnr_db":
+                            explanations.append(
+                                f"Tỷ lệ hài trên nhiễu (HNR) sụt giảm mạnh ({z_value:.2f} SD, dấu hiệu hụt hơi hoặc suy giảm độ trong thanh âm)."
+                            )
+                    z_scores.append(direction * z_value)
+            else:
+                breakdown = {
+                    "f0_mean_hz": {"value": current_feats["f0_mean"], "baseline": None, "z_score": None},
+                    "jitter_percent": {"value": current_feats["jitter_percent"], "baseline": None, "z_score": None},
+                    "shimmer_percent": {"value": current_feats["shimmer_percent"], "baseline": None, "z_score": None},
+                    "hnr_db": {"value": current_feats["hnr_db"], "baseline": None, "z_score": None},
+                }
+
+            if self.stress_model is not None:
+                prediction = self.stress_model.predict(
+                    waveform, self.acoustic_extractor.get_feature_vector(effective_wav)
+                )
+                model_score = prediction["stress_probability"] * 100.0
+                confidence = round(prediction["confidence"], 3)
+
+                if baseline is not None and speaker_info.get("verified") is not False:
+                    # Calibrated Fusion: Adjust model score with personal baseline Z-scores
+                    # Prevents false positives for users who naturally speak at high pitch or loud intensity
+                    avg_z = float(np.mean(z_scores)) if z_scores else 0.0
+                    if avg_z <= 1.0:
+                        # Acoustic metrics within normal calm range: apply baseline dampening to reduce false positives
+                        dampening = 0.85 + 0.15 * max(-1.0, min(1.0, avg_z))
+                        calibrated_score = model_score * dampening
+                    else:
+                        # Significant acoustic divergence: elevate stress score proportionally
+                        z_boost = 100.0 / (1.0 + np.exp(-1.5 * (avg_z - 1.5)))
+                        calibrated_score = 0.50 * model_score + 0.50 * z_boost
+                    stress_score = round(float(np.clip(calibrated_score, 0.0, 100.0)), 1)
+                    scoring_method = "calibrated_hybrid_model"
+                    match_info = (
+                        f" (Độ khớp giọng {speaker_info['similarity_score']})"
+                        if speaker_info.get("similarity_score") is not None
+                        else ""
+                    )
+                    explanations.append(
+                        f"Đã hiệu chuẩn Z-Score với Baseline cá nhân của '{user_id}'{match_info}."
+                    )
+                else:
+                    stress_score = round(model_score, 1)
+                    scoring_method = "trained_hybrid_model"
+
                 explanations.append(
-                    f"Đã hiệu chuẩn Z-Score với Baseline cá nhân của '{user_id}'{match_info}."
+                    f"Mô hình phân loại giọng nói dự đoán nhãn {prediction['predicted_label']}."
+                )
+            elif baseline is not None:
+                average_z = max(0.0, float(np.mean(z_scores)))
+                stress_score = round(
+                    100.0 / (1.0 + np.exp(-1.2 * (average_z - 1.2))), 1
+                )
+                confidence = None
+                scoring_method = "personal_baseline_rules"
+                explanations.append(
+                    "Điểm stress dùng quy tắc so sánh với baseline cá nhân, chưa được hiệu chuẩn xác suất."
                 )
             else:
-                stress_score = round(model_score, 1)
-                scoring_method = "trained_hybrid_model"
+                stress_score = None
+                confidence = None
+                scoring_method = "uncalibrated"
+                explanations.append(
+                    "Chưa có mô hình stress đã huấn luyện hoặc baseline cá nhân; không thể kết luận mức stress."
+                )
 
-            explanations.append(
-                f"Mô hình phân loại giọng nói dự đoán nhãn {prediction['predicted_label']}."
-            )
-        elif baseline is not None:
-            average_z = max(0.0, float(np.mean(z_scores)))
-            stress_score = round(
-                100.0 / (1.0 + np.exp(-1.2 * (average_z - 1.2))), 1
-            )
-            confidence = None
-            scoring_method = "personal_baseline_rules"
-            explanations.append(
-                "Điểm stress dùng quy tắc so sánh với baseline cá nhân, chưa được hiệu chuẩn xác suất."
-            )
-        else:
-            stress_score = None
-            confidence = None
-            scoring_method = "uncalibrated"
-            explanations.append(
-                "Chưa có mô hình stress đã huấn luyện hoặc baseline cá nhân; không thể kết luận mức stress."
-            )
+            if stress_score is None:
+                status = "UNCALIBRATED"
+            elif stress_score >= self.high_stress_threshold:
+                status = "HIGH_STRESS"
+            elif stress_score >= self.stress_threshold:
+                status = "MODERATE_STRESS"
+            else:
+                status = "CALM"
 
-        if stress_score is None:
-            status = "UNCALIBRATED"
-        elif stress_score >= self.high_stress_threshold:
-            status = "HIGH_STRESS"
-        elif stress_score >= self.stress_threshold:
-            status = "MODERATE_STRESS"
-        else:
-            status = "CALM"
-
-        return {
-            "request_id": request_id,
-            "processing_time_ms": int((time.time() - start_time) * 1000),
-            "speaker": speaker_info,
-            "emotion": emotion,
-            "assessment": {
-                "status": status,
-                "stress_score": stress_score,
-                "confidence": confidence,
-                "method": scoring_method,
-            },
-            "acoustic_breakdown": breakdown,
-            "explanations": explanations,
-        }
+            return {
+                "request_id": request_id,
+                "processing_time_ms": int((time.time() - start_time) * 1000),
+                "speaker": speaker_info,
+                "emotion": emotion,
+                "assessment": {
+                    "status": status,
+                    "stress_score": stress_score,
+                    "confidence": confidence,
+                    "method": scoring_method,
+                },
+                "acoustic_breakdown": breakdown,
+                "explanations": explanations,
+            }
+        finally:
+            if temp_wav and os.path.exists(temp_wav):
+                os.remove(temp_wav)

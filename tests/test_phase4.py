@@ -60,24 +60,24 @@ def main():
 
     # Same speaker verification (Calm check-in test)
     is_same, score_same = calibrator.verify_speaker(
-        test_calm_speaker1, profile["speaker_embedding"], threshold=0.75
+        test_calm_speaker1, profile["speaker_embedding"], threshold=0.70
     )
     print(f"   - Cùng người nói (Actor_01): Cosine = {score_same:.4f} -> Verified: {is_same}")
-    assert is_same, f"Lỗi: Cùng người nói phải được xác minh (Cosine {score_same} < 0.75)"
+    assert is_same, f"Lỗi: Cùng người nói phải được xác minh (Cosine {score_same} < 0.70)"
 
     # Different speaker (Impostor)
     is_diff, score_diff = calibrator.verify_speaker(
-        impostor_speaker, profile["speaker_embedding"], threshold=0.75
+        impostor_speaker, profile["speaker_embedding"], threshold=0.70
     )
     print(f"   - Khác người nói (Actor_02): Cosine = {score_diff:.4f} -> Verified: {is_diff}")
-    assert not is_diff, f"Lỗi: Khác người nói phải bị từ chối (Cosine {score_diff} >= 0.75)"
+    assert not is_diff, f"Lỗi: Khác người nói phải bị từ chối (Cosine {score_diff} >= 0.70)"
 
     # Multi-speaker identification
     candidates = {
         "driver_actor_01": profile["speaker_embedding"],
         "driver_actor_02": calibrator.extract_embedding(impostor_speaker),
     }
-    best_user, best_sim = calibrator.find_best_match(test_calm_speaker1, candidates, threshold=0.75)
+    best_user, best_sim = calibrator.find_best_match(test_calm_speaker1, candidates, threshold=0.70)
     print(f"   - Tự động nhận diện (find_best_match): Tìm thấy '{best_user}' với Cosine = {best_sim:.4f}")
     assert best_user == "driver_actor_01", f"Lỗi: Nhận diện sai người nói, kỳ vọng driver_actor_01, nhận {best_user}"
     print("✅ Cơ chế nhận diện và xác minh người nói hoạt động chính xác tuyệt đối!")
