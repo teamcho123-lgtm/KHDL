@@ -12,7 +12,7 @@ valid_json: !ref <data_folder>/valid.json
 test_json: !ref <data_folder>/test.json
 sample_rate: 16000
 
-number_of_epochs: 2
+number_of_epochs: 15
 max_batch_length: 25.0
 num_buckets: 10
 num_workers: 0
@@ -20,7 +20,7 @@ lr: 0.001
 lr_wav2vec2: 0.00001
 weight_decay: 0.0001
 lr_factor: 0.5
-lr_patience: 2
+lr_patience: 3
 lr_min_delta: 0.0001
 min_learning_rate: 0.0000001
 auto_mix_prec: False
@@ -29,13 +29,16 @@ wav2vec2_hub: facebook/wav2vec2-base
 wav2vec2: !new:speechbrain.integrations.huggingface.wav2vec2.Wav2Vec2
     source: !ref <wav2vec2_hub>
     save_path: !ref <save_folder>/wav2vec2
-    output_norm: False
+    output_norm: True
     freeze: True
     freeze_feature_extractor: True
 
+# Class weights for NLLLoss: [0: normal, 1: stress] to address imbalance (normal: 192, stress: 256)
+class_weights: [1.33, 1.0]
+
 output_mlp: !new:speechbrain.nnet.linear.Linear
     input_size: 773
-    n_neurons: 2
+    n_neurons: 2 # 2 classes: 0 = 'normal', 1 = 'stress'
     bias: True
 
 modules:

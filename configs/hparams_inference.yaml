@@ -3,6 +3,8 @@ device: cpu # set cuda or cuda:0 to use a GPU
 sample_rate: 16000
 max_audio_seconds: 300.0
 
+# Optional MetricGAN+ speech denoiser (disabled by default to avoid unused startup memory)
+enable_enhancer: false
 metricgan_hub: speechbrain/metricgan-plus-voicebank
 metricgan_savedir: pretrained_models/metricgan-plus-voicebank
 
@@ -15,12 +17,21 @@ emotion_savedir: pretrained_models/emotion-recognition-wav2vec2-IEMOCAP
 emotion_pymodule_file: custom_interface.py
 emotion_classname: CustomEncoderWav2vec2Classifier
 
-# Stress inference is enabled automatically after train.py creates a checkpoint.
+# Stress/arousal proxy inference is enabled automatically after train.py creates a checkpoint.
 stress_hparams: configs/hparams_train.yaml
 stress_checkpoint_dir: results/stress_wav2vec2/1986/save
 
 baseline_dir: data/baseline_profiles
+# Cross-emotion speaker verification threshold when user_id is explicitly claimed (0.50 separates
+# genuine speaker under high emotion [0.55-0.66] from impostors [<0.45] on RAVDESS).
 speaker_similarity_threshold: 0.50
+# Strict speaker threshold for calm check-in verification and multi-user auto-identification.
+speaker_identification_threshold: 0.70
+
 stress_threshold: 50.0
 high_stress_threshold: 70.0
 zscore_alert_threshold: 1.5
+
+# API resource protection limits
+max_concurrent_inferences: 2
+inference_timeout_seconds: 120.0

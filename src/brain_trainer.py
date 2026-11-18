@@ -28,7 +28,15 @@ class StressBrain(sb.Brain):
 
     def compute_objectives(self, predictions, batch, stage):
         labels = batch.stress_label_encoded.data.long().view(-1)
-        loss = self.hparams.compute_cost(predictions, labels)
+        if hasattr(self.hparams, "class_weights") and self.hparams.class_weights:
+            weights = torch.tensor(
+                self.hparams.class_weights,
+                dtype=predictions.dtype,
+                device=self.device,
+            )
+            loss = torch.nn.functional.nll_loss(predictions, labels, weight=weights)
+        else:
+            loss = self.hparams.compute_cost(predictions, labels)
 
         if stage != sb.Stage.TRAIN:
             predicted = predictions.argmax(dim=-1)

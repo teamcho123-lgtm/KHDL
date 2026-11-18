@@ -105,7 +105,8 @@ class SpeakerCalibrator:
         best_score = -1.0
 
         for user_id, embedding in candidates.items():
-            emb = np.asarray(embedding)
+            raw_emb = embedding["speaker_embedding"] if isinstance(embedding, dict) else embedding
+            emb = np.asarray(raw_emb)
             sim = self.compute_similarity(current_emb, emb)
             if sim > best_score:
                 best_score = sim

@@ -3,16 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Hệ thống Phân tích Cảm xúc & Định lượng Căng thẳng Giọng nói</title>
-    <link rel="stylesheet" href="style.css" />
+    <title>Phân tích Cảm xúc & Ước lượng Căng thẳng Giọng nói (Arousal Proxy)</title>
+    <link rel="stylesheet" href="style.css?v=2.3" />
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div class="brand">
           <p class="eyebrow">SPEECHBRAIN 1.0 &bull; ACOUSTIC PHYSICS &bull; WAV2VEC2</p>
-          <h1>Phân tích Cảm xúc & Định lượng Căng thẳng</h1>
-          <p class="subtitle">Đánh giá mức độ stress, nhận diện cảm xúc và hiệu chuẩn đặc trưng âm học cá nhân hóa.</p>
+          <h1>Phân tích Cảm xúc & Chỉ báo Căng thẳng (Proxy)</h1>
+          <p class="subtitle">Nhận diện cảm xúc, trích xuất đặc trưng thanh học và hiệu chuẩn chỉ số kích hoạt giọng nói theo baseline cá nhân.</p>
         </div>
         <div id="health" class="health" role="status" aria-live="polite">
           <span class="health-dot"></span><span>Đang kiểm tra API...</span>
@@ -27,6 +27,11 @@
           <div class="field">
             <label for="api-url">Địa chỉ API Backend</label>
             <input id="api-url" type="url" value="" placeholder="http://127.0.0.1:8000" required />
+          </div>
+
+          <div class="field">
+            <label for="api-key">Khóa xác thực API <span class="optional">(X-API-Key, nếu bật)</span></label>
+            <input id="api-key" type="password" placeholder="Để trống nếu chạy cục bộ (loopback)" autocomplete="off" />
           </div>
 
           <!-- KHU VỰC TẢI TỆP HOẶC KÉO THẢ -->
@@ -52,16 +57,16 @@
 
           <!-- MẪU ÂM THANH THỬ NGHIỆM NHANH -->
           <div class="field">
-            <label>Mẫu kiểm thử nhanh (Demo Samples)</label>
+            <label>Mẫu kiểm thử nhanh (Demo Samples - RAVDESS)</label>
             <div id="sample-buttons" class="sample-grid">
               <button type="button" class="sample-btn" data-sample="calm_male">
-                🎧 Nam - Bình tĩnh
+                🎧 Nam - Bình tĩnh (Actor 01)
               </button>
               <button type="button" class="sample-btn" data-sample="angry_male">
-                🔥 Nam - Giận dữ
+                🔥 Nam - Giận dữ (Actor 01)
               </button>
               <button type="button" class="sample-btn" data-sample="fearful_female">
-                ⚡ Nữ - Sợ hãi
+                ⚡ Nữ - Sợ hãi (Actor 02)
               </button>
             </div>
           </div>
@@ -69,18 +74,30 @@
           <!-- CÁ NHÂN HÓA BASELINE -->
           <div class="field">
             <label for="user-id">Mã người dùng (User ID) <span class="optional">(Tùy chọn)</span></label>
-            <input id="user-id" type="text" maxlength="64" list="users-datalist" placeholder="Ví dụ: driver_01 hoặc user_actor_01" autocomplete="off" />
-            <datalist id="users-datalist"></datalist>
-            <p class="hint">Nhập User ID để kích hoạt xác minh người nói (ECAPA-TDNN) và hiệu chuẩn Z-score nền.</p>
+            <input id="user-id" type="text" maxlength="64" placeholder="Ví dụ: driver_actor_01" autocomplete="off" />
+            <p class="hint">Nhập User ID để xác minh người nói (ECAPA-TDNN) và chuẩn hóa Z-score theo baseline cá nhân.</p>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-weight:500;font-size:0.8rem;">
+              <input id="overwrite-baseline" type="checkbox" />
+              Cho phép ghi đè khi đăng ký lại Baseline
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:6px;font-weight:500;font-size:0.8rem;">
+              <input id="identify-speaker" type="checkbox" />
+              Tự động khớp người nói nếu để trống User ID (Ngưỡng Cosine &ge; 0.70)
+            </label>
           </div>
 
           <!-- NÚT HÀNH ĐỘNG -->
           <div class="actions">
             <button id="analyze-button" class="primary" type="button">
-              <span>🚀</span> Phân tích Stress
+              <span>🚀</span> Phân tích Audio
             </button>
             <button id="baseline-button" class="secondary" type="button">
               <span>👤</span> Đăng ký Baseline
+            </button>
+          </div>
+          <div style="margin-top:8px;">
+            <button id="delete-baseline-button" class="secondary" type="button" style="width:100%;min-height:36px;font-size:0.8rem;">
+              🗑️ Xóa Baseline của User ID này
             </button>
           </div>
 
@@ -91,7 +108,7 @@
         <section class="panel output" aria-labelledby="result-heading">
           <div class="result-heading">
             <div>
-              <p class="eyebrow">KẾT QUẢ ĐÁNH GIÁ</p>
+              <p class="eyebrow">KẾT QUẢ ƯỚC LƯỢNG (AROUSAL / STRESS PROXY)</p>
               <h2 id="result-heading">Sẵn sàng phân tích</h2>
             </div>
             <div class="badges">
@@ -103,7 +120,7 @@
           <div id="empty-state" class="empty-state">
             <div class="empty-icon">📊</div>
             <h3>Chưa có dữ liệu phân tích</h3>
-            <p>Chọn hoặc kéo thả một tệp âm thanh (hoặc bấm chọn mẫu demo bên trái) rồi nhấn <strong>Phân tích Stress</strong>.</p>
+            <p>Chọn hoặc kéo thả một tệp âm thanh (hoặc bấm chọn mẫu demo bên trái) rồi nhấn <strong>Phân tích Audio</strong>.</p>
           </div>
 
           <!-- NỘI DUNG KẾT QUẢ CHÍNH (ẨN KHI CHƯA CHẠY) -->
@@ -113,30 +130,31 @@
             <div class="hero-grid">
               <!-- VÒNG TRÒN GAUGE STRESS -->
               <div class="gauge-card">
-                <span class="card-caption">ĐIỂM SỐ CĂNG THẲNG (STRESS SCORE)</span>
+                <span class="card-caption">CHỈ SỐ KÍCH HOẠT / STRESS PROXY</span>
                 <div class="gauge-wrapper">
                   <svg class="gauge-svg" viewBox="0 0 120 120">
                     <circle class="gauge-bg" cx="60" cy="60" r="50"></circle>
                     <circle id="gauge-bar" class="gauge-bar" cx="60" cy="60" r="50"></circle>
                   </svg>
                   <div class="gauge-content">
-                    <span id="gauge-number" class="gauge-number">0.0</span>
+                    <span id="gauge-number" class="gauge-number">--</span>
                     <span class="gauge-unit">/ 100</span>
                   </div>
                 </div>
                 <div class="gauge-meta">
                   <span id="confidence-text">Độ tin cậy: --</span>
-                  <span id="method-text" class="method-tag">Mô hình lai</span>
+                  <span id="duration-text">Thời lượng phân tích: --</span>
+                  <span id="method-text" class="method-tag">Chưa xác định</span>
                 </div>
               </div>
 
               <!-- CẢM XÚC DỰ ĐOÁN & XÁC SUẤT -->
               <div class="emotion-card">
-                <span class="card-caption">NHẬN DIỆN CẢM XÚC CHÍNH</span>
+                <span class="card-caption">NHẬN DIỆN CẢM XÚC CHÍNH (IEMOCAP WAV2VEC2)</span>
                 <div class="dominant-emotion">
                   <span id="emotion-icon" class="emotion-icon">😐</span>
                   <div>
-                    <h3 id="dominant-emotion-label">Bình thường (Neutral)</h3>
+                    <h3 id="dominant-emotion-label">Chưa có</h3>
                     <p id="emotion-confidence-text" class="subcaption">Độ tin cậy cảm xúc: --</p>
                   </div>
                 </div>
@@ -169,19 +187,19 @@
 
             <!-- BẢNG GIẢI THÍCH SINH LÝ HỌC (XAI EXPLANATIONS) -->
             <div id="xai-section" class="xai-section hidden">
-              <h3>🔍 Giải thích Sinh lý Thanh quản (Explainable AI)</h3>
+              <h3>🔍 Ghi chú Phân tích &amp; Giải thích Âm học (XAI)</h3>
               <div id="xai-alerts" class="xai-alerts"></div>
             </div>
 
             <!-- 4 THÔNG SỐ VẬT LÝ THANH MÔN (ACOUSTIC PHYSICS) -->
             <div class="physics-section">
-              <h3>🧬 Đặc trưng Âm học Vật lý (Glottal Physics & Voice Dynamics)</h3>
+              <h3>🧬 Đặc trưng Âm học Vật lý (Glottal Physics &amp; Voice Dynamics)</h3>
               <div class="physics-grid">
                 <!-- F0 Pitch -->
                 <div class="physics-card">
                   <div class="physics-header">
                     <span class="p-title">Tần số cơ bản F0 (Pitch)</span>
-                    <span id="badge-f0" class="mini-badge">Normal</span>
+                    <span id="badge-f0" class="mini-badge">--</span>
                   </div>
                   <div class="physics-value"><strong id="val-f0">--</strong> <span class="unit">Hz</span></div>
                   <div class="physics-footer">
@@ -194,7 +212,7 @@
                 <div class="physics-card">
                   <div class="physics-header">
                     <span class="p-title">Jitter (Rung tần số vi mô)</span>
-                    <span id="badge-jitter" class="mini-badge">Normal</span>
+                    <span id="badge-jitter" class="mini-badge">--</span>
                   </div>
                   <div class="physics-value"><strong id="val-jitter">--</strong> <span class="unit">%</span></div>
                   <div class="physics-footer">
@@ -207,7 +225,7 @@
                 <div class="physics-card">
                   <div class="physics-header">
                     <span class="p-title">Shimmer (Rung biên độ vi mô)</span>
-                    <span id="badge-shimmer" class="mini-badge">Normal</span>
+                    <span id="badge-shimmer" class="mini-badge">--</span>
                   </div>
                   <div class="physics-value"><strong id="val-shimmer">--</strong> <span class="unit">%</span></div>
                   <div class="physics-footer">
@@ -220,7 +238,7 @@
                 <div class="physics-card">
                   <div class="physics-header">
                     <span class="p-title">HNR (Sóng điều hòa / Nhiễu)</span>
-                    <span id="badge-hnr" class="mini-badge">Normal</span>
+                    <span id="badge-hnr" class="mini-badge">--</span>
                   </div>
                   <div class="physics-value"><strong id="val-hnr">--</strong> <span class="unit">dB</span></div>
                   <div class="physics-footer">
@@ -261,10 +279,10 @@
       </section>
 
       <footer>
-        Hệ thống nghiên cứu Speech Stress &amp; Emotion Recognition &bull; Điểm stress là chỉ báo thực nghiệm dựa trên đặc trưng âm học &amp; mô hình học sâu, không phải chẩn đoán y khoa.
+        Lưu ý khoa học: Mô hình phân loại được huấn luyện trên nhãn cảm xúc diễn xuất (RAVDESS: Neutral/Calm so với Angry/Fearful). Điểm số là chỉ báo kích hoạt âm học thực nghiệm (Vocal Arousal / Stress Proxy), không phải phép đo stress sinh lý hay chẩn đoán y khoa.
       </footer>
     </main>
 
-    <script src="app.js" defer></script>
+    <script src="app.js?v=2.3" defer></script>
   </body>
 </html>
