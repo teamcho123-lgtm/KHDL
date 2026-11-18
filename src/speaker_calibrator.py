@@ -4,6 +4,7 @@ and computes cosine similarity for speaker verification and profiling.
 """
 
 import os
+import sys
 import torch
 import torchaudio
 import numpy as np
@@ -30,10 +31,20 @@ class SpeakerCalibrator:
             self.device = device
 
         print(f"[SpeakerCalibrator] Initializing ECAPA-TDNN on device: {self.device}...")
+        kwargs = {"device": self.device}
+        strategy_kwargs = {}
+        if sys.platform == "win32":
+            try:
+                from speechbrain.utils.fetching import LocalStrategy
+                strategy_kwargs["local_strategy"] = LocalStrategy.COPY
+            except Exception:
+                pass
+
         self.classifier = EncoderClassifier.from_hparams(
             source=model_source,
             savedir=savedir,
-            run_opts={"device": self.device},
+            run_opts=kwargs,
+            **strategy_kwargs,
         )
         print("[SpeakerCalibrator] ECAPA-TDNN loaded successfully.")
 

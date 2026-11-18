@@ -23,6 +23,31 @@ const playerContainer = document.querySelector("#player-container");
 const audioPlayer = document.querySelector("#audio-player");
 const fileMeta = document.querySelector("#file-meta");
 
+// Tab elements
+const tabUpload = document.querySelector("#tab-upload");
+const tabRecord = document.querySelector("#tab-record");
+const uploadPanel = document.querySelector("#upload-panel");
+const recordPanel = document.querySelector("#record-panel");
+
+// Record elements
+const recordCanvas = document.querySelector("#record-canvas");
+const recordStatusDot = document.querySelector("#record-status-dot");
+const recordTimer = document.querySelector("#record-timer");
+const recordHint = document.querySelector("#record-hint");
+const recordToggleBtn = document.querySelector("#record-toggle-btn");
+const recordBtnText = document.querySelector("#record-btn-text");
+const recordCancelBtn = document.querySelector("#record-cancel-btn");
+
+// Benchmark elements
+const toggleBenchmarkBtn = document.querySelector("#toggle-benchmark-btn");
+const benchmarkSection = document.querySelector("#benchmark-section");
+const benchmarkStatsBadge = document.querySelector("#benchmark-stats-badge");
+const benchmarkGroundTruth = document.querySelector("#benchmark-ground-truth");
+const benchmarkDevice = document.querySelector("#benchmark-device");
+const benchmarkContext = document.querySelector("#benchmark-context");
+const benchmarkConsent = document.querySelector("#benchmark-consent");
+const submitBenchmarkBtn = document.querySelector("#submit-benchmark-btn");
+
 // Gauge elements
 const gaugeBar = document.querySelector("#gauge-bar");
 const gaugeNumber = document.querySelector("#gauge-number");
@@ -672,6 +697,326 @@ copyJsonBtn?.addEventListener("click", () => {
       copyJsonBtn.textContent = "📋 Sao chép JSON";
     }, 2000);
   });
+});
+
+// Tab Switching
+tabUpload?.addEventListener("click", () => {
+  tabUpload.classList.add("active");
+  tabUpload.setAttribute("aria-selected", "true");
+  tabRecord?.classList.remove("active");
+  tabRecord?.setAttribute("aria-selected", "false");
+  uploadPanel?.classList.remove("hidden");
+  recordPanel?.classList.add("hidden");
+});
+
+tabRecord?.addEventListener("click", () => {
+  tabRecord.classList.add("active");
+  tabRecord.setAttribute("aria-selected", "true");
+  tabUpload?.classList.remove("active");
+  tabUpload?.setAttribute("aria-selected", "false");
+  recordPanel?.classList.remove("hidden");
+  uploadPanel?.classList.add("hidden");
+});
+
+// Recording state variables
+let isRecording = false;
+let mediaRecorder = null;
+let recordMediaStream = null;
+let recordAudioCtx = null;
+let recordAnalyser = null;
+let recordAnimFrame = null;
+let recordChunks = [];
+let recordStartTime = null;
+let recordTimerInterval = null;
+const MAX_RECORD_SECONDS = 15;
+
+function stopVisualizer() {
+  if (recordAnimFrame) {
+    cancelAnimationFrame(recordAnimFrame);
+    recordAnimFrame = null;
+  }
+  if (recordCanvas) {
+    const ctx = recordCanvas.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "#0f172a";
+      ctx.fillRect(0, 0, recordCanvas.width, recordCanvas.height);
+    }
+  }
+}
+
+function startVisualizer(stream) {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx || !recordCanvas) return;
+    recordAudioCtx = new AudioCtx();
+    const source = recordAudioCtx.createMediaStreamSource(stream);
+    recordAnalyser = recordAudioCtx.createAnalyser();
+    recordAnalyser.fftSize = 128;
+    source.connect(recordAnalyser);
+
+    const canvasCtx = recordCanvas.getContext("2d");
+    const bufferLength = recordAnalyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    function draw() {
+      if (!isRecording) return;
+      recordAnimFrame = requestAnimationFrame(draw);
+      recordAnalyser.getByteFrequencyData(dataArray);
+
+      canvasCtx.fillStyle = "#0f172a";
+      canvasCtx.fillRect(0, 0, recordCanvas.width, recordCanvas.height);
+
+      const barWidth = (recordCanvas.width / bufferLength) * 2;
+      let x = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        const barHeight = (dataArray[i] / 255) * recordCanvas.height;
+        canvasCtx.fillStyle = dataArray[i] > 180 ? "#ef4444" : "#38bdf8";
+        canvasCtx.fillRect(x, recordCanvas.height - barHeight, barWidth - 1, barHeight);
+        x += barWidth + 1;
+      }
+    }
+    draw();
+  } catch (err) {
+    console.warn("Visualizer init skipped:", err);
+  }
+}
+
+function cleanupRecordingStream() {
+  if (recordTimerInterval) {
+    clearInterval(recordTimerInterval);
+    recordTimerInterval = null;
+  }
+  stopVisualizer();
+  if (recordAudioCtx) {
+    try { recordAudioCtx.close(); } catch {}
+    recordAudioCtx = null;
+  }
+  if (recordMediaStream) {
+    recordMediaStream.getTracks().forEach((track) => track.stop());
+    recordMediaStream = null;
+  }
+  isRecording = false;
+  recordStatusDot?.classList.remove("active");
+  recordToggleBtn?.classList.remove("recording");
+  if (recordBtnText) recordBtnText.textContent = "Bắt đầu thu âm";
+  recordCancelBtn?.classList.add("hidden");
+}
+
+async function startRecording() {
+  if (isRecording) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setMessage("Trình duyệt không hỗ trợ MediaDevices / Microphone trực tiếp.", true);
+    return;
+  }
+
+  try {
+    recordChunks = [];
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
+
+    recordMediaStream = stream;
+    isRecording = true;
+    recordStartTime = Date.now();
+
+    recordStatusDot?.classList.add("active");
+    recordToggleBtn?.classList.add("recording");
+    if (recordBtnText) recordBtnText.textContent = "⏹ Dừng thu âm";
+    recordCancelBtn?.classList.remove("hidden");
+    if (recordHint) recordHint.textContent = "Đang thu âm... Hãy nói rõ ràng";
+
+    startVisualizer(stream);
+
+    recordTimerInterval = setInterval(() => {
+      const elapsedSec = Math.floor((Date.now() - recordStartTime) / 1000);
+      const m = Math.floor(elapsedSec / 60).toString().padStart(2, "0");
+      const s = (elapsedSec % 60).toString().padStart(2, "0");
+      if (recordTimer) recordTimer.textContent = `${m}:${s} / 00:15`;
+
+      if (elapsedSec >= MAX_RECORD_SECONDS) {
+        stopRecording();
+      }
+    }, 200);
+
+    let options = {};
+    if (typeof MediaRecorder !== "undefined") {
+      if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+        options = { mimeType: "audio/webm;codecs=opus" };
+      } else if (MediaRecorder.isTypeSupported("audio/ogg;codecs=opus")) {
+        options = { mimeType: "audio/ogg;codecs=opus" };
+      } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+        options = { mimeType: "audio/mp4" };
+      }
+    }
+
+    mediaRecorder = new MediaRecorder(stream, options);
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        recordChunks.push(e.data);
+      }
+    };
+
+    mediaRecorder.onstop = async () => {
+      const recordedBlob = new Blob(recordChunks, { type: mediaRecorder.mimeType || "audio/webm" });
+      cleanupRecordingStream();
+
+      if (recordChunks.length === 0 || recordedBlob.size < 1000) {
+        setMessage("Chưa thu được tín hiệu âm thanh hợp lệ.", true);
+        return;
+      }
+
+      setMessage("Đang chuẩn hóa âm thanh về 16kHz PCM WAV...");
+      try {
+        const arrayBuf = await recordedBlob.arrayBuffer();
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        const decodeCtx = new AudioCtx();
+        const decoded = await decodeCtx.decodeAudioData(arrayBuf);
+        const cleanWav = bufferToWavBlob(decoded);
+        decodeCtx.close();
+
+        const duration = decoded.duration;
+        const timeStr = `${Math.floor(duration / 60)}:${Math.floor(duration % 60).toString().padStart(2, "0")}`;
+        const fileName = `recorded_speech_${Date.now()}.wav`;
+        const wavFile = new File([cleanWav], fileName, { type: "audio/wav" });
+
+        await setAudioSource(wavFile, fileName);
+        if (recordTimer) recordTimer.textContent = `00:00 / 00:15`;
+        if (recordHint) recordHint.textContent = `Đã thu: ${timeStr} (${duration.toFixed(1)}s)`;
+
+        if (duration < 1.5) {
+          setMessage(`Âm thanh thu được (${duration.toFixed(1)}s) quá ngắn. Khuyến nghị nói từ 3s - 10s.`, true);
+        } else {
+          setMessage(`Thu âm hoàn tất (${duration.toFixed(1)}s)! Bấm "Phân tích Audio" hoặc "Lưu vào Benchmark".`);
+        }
+      } catch (err) {
+        setMessage(`Lỗi chuẩn hóa file ghi âm: ${err.message}`, true);
+      }
+    };
+
+    mediaRecorder.start(200);
+  } catch (err) {
+    cleanupRecordingStream();
+    let msg = `Không thể kích hoạt Microphone: ${err.message}`;
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      msg = "Quyền truy cập Microphone bị từ chối. Vui lòng cho phép quyền mic trên trình duyệt.";
+    }
+    setMessage(msg, true);
+  }
+}
+
+function stopRecording() {
+  if (!isRecording) return;
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+  } else {
+    cleanupRecordingStream();
+  }
+}
+
+function cancelRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.ondataavailable = null;
+    mediaRecorder.onstop = null;
+    mediaRecorder.stop();
+  }
+  recordChunks = [];
+  cleanupRecordingStream();
+  if (recordTimer) recordTimer.textContent = "00:00 / 00:15";
+  if (recordHint) recordHint.textContent = "Đã hủy thu âm.";
+  setMessage("Đã hủy đoạn thu âm vừa rồi.");
+}
+
+recordToggleBtn?.addEventListener("click", () => {
+  if (!isRecording) {
+    startRecording();
+  } else {
+    stopRecording();
+  }
+});
+
+recordCancelBtn?.addEventListener("click", cancelRecording);
+
+// Benchmark Toggle & Stats
+async function loadBenchmarkStats() {
+  if (!benchmarkStatsBadge) return;
+  try {
+    const base = getBaseUrl();
+    const res = await fetch(`${base}/api/v1/benchmarks/stats`, { headers: getAuthHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    benchmarkStatsBadge.textContent = `${data.total_samples} mẫu (${data.speakers_count} người nói)`;
+  } catch {
+    benchmarkStatsBadge.textContent = "Mẫu: --";
+  }
+}
+
+toggleBenchmarkBtn?.addEventListener("click", () => {
+  if (!benchmarkSection) return;
+  const isHidden = benchmarkSection.classList.toggle("hidden");
+  if (!isHidden) {
+    loadBenchmarkStats();
+    benchmarkSection.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+});
+
+// Benchmark Submit
+submitBenchmarkBtn?.addEventListener("click", async () => {
+  if (!currentFile) {
+    setMessage("Vui lòng tải tệp hoặc thu âm một đoạn giọng nói trước khi lưu vào benchmark.", true);
+    return;
+  }
+
+  const uid = userInput?.value.trim();
+  if (!uid) {
+    setMessage("Vui lòng nhập Mã người dùng (User ID) để quản lý độc lập người nói.", true);
+    userInput?.focus();
+    return;
+  }
+
+  const groundTruth = benchmarkGroundTruth?.value || "normal";
+  const device = benchmarkDevice?.value || "built_in_mic";
+  const context = benchmarkContext?.value.trim() || "";
+  const consent = benchmarkConsent?.checked;
+
+  if (!consent) {
+    setMessage("Bạn cần đánh dấu đồng ý cam kết lưu trữ mẫu kiểm chứng ẩn danh.", true);
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", currentFile);
+  formData.append("user_id", uid);
+  formData.append("ground_truth", groundTruth);
+  formData.append("device", device);
+  if (context) formData.append("context", context);
+  formData.append("consent", "true");
+
+  submitBenchmarkBtn.disabled = true;
+  setMessage("Đang xác thực chất lượng âm học và lưu vào tập dữ liệu benchmark...");
+
+  try {
+    const base = getBaseUrl();
+    const res = await fetch(`${base}/api/v1/benchmarks/submit`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: formData,
+    });
+    const result = await res.json();
+    if (!res.ok) {
+      throw new Error(result.detail || "Không thể lưu mẫu benchmark.");
+    }
+
+    setMessage(`✅ ${result.message} (Sample ID: ${result.sample_id})`);
+    loadBenchmarkStats();
+  } catch (err) {
+    setMessage(`Lỗi lưu benchmark: ${err.message}`, true);
+  } finally {
+    submitBenchmarkBtn.disabled = false;
+  }
 });
 
 apiInput.addEventListener("change", checkHealth);

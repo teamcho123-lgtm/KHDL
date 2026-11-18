@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import sys
 import tempfile
 import time
 import uuid
@@ -85,12 +86,21 @@ class StressAnalysisPipeline:
             try:
                 from speechbrain.inference.interfaces import foreign_class
 
+                strategy_kwargs = {}
+                if sys.platform == "win32":
+                    try:
+                        from speechbrain.utils.fetching import LocalStrategy
+                        strategy_kwargs["local_strategy"] = LocalStrategy.COPY
+                    except Exception:
+                        pass
+
                 self.emotion_model = foreign_class(
                     source=emotion_hub,
                     savedir=emotion_savedir,
                     pymodule_file=emotion_pymodule_file,
                     classname=emotion_classname,
                     run_opts={"device": self.device},
+                    **strategy_kwargs,
                 )
             except Exception as exc:
                 self.emotion_load_error = str(exc)
@@ -450,7 +460,21 @@ class StressAnalysisPipeline:
     def _classify_emotion(self, audio_path: str):
         if self.emotion_model is None:
             return None
-        probabilities, _, _, labels = self.emotion_model.classify_file(audio_path)
+        try:
+            probabilities, _, _, labels = self.emotion_model.classify_file(audio_path)
+        except Exception:
+            # Fallback for Windows where SpeechBrain's load_audio misparses drive letters (e.g. C:\)
+            sig, sr = sf.read(audio_path)
+            tensor_sig = torch.from_numpy(sig).float()
+            if tensor_sig.ndim > 1:
+                tensor_sig = tensor_sig.mean(dim=-1)
+            tensor_sig = tensor_sig.unsqueeze(0).to(self.device)
+            rel_len = torch.tensor([1.0], device=self.device)
+            outputs = self.emotion_model.encode_batch(tensor_sig, rel_len)
+            outputs = self.emotion_model.mods.output_mlp(outputs).squeeze(1)
+            probabilities = self.emotion_model.hparams.softmax(outputs)
+            score, index = torch.max(probabilities, dim=-1)
+            labels = self.emotion_model.hparams.label_encoder.decode_torch(index)
         probabilities = probabilities.reshape(-1).cpu()
         label = labels[0] if labels else None
         label_encoder = getattr(self.emotion_model.hparams, "label_encoder", None)

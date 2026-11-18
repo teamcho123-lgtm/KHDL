@@ -13,6 +13,11 @@ __pycache__/
 /data/raw/
 /data/manifests/
 /data/baseline_profiles/
+/data/collected_benchmark/
 
 # Training checkpoints, logs, and evaluation output.
 /results/
+
+# Graphify
+graphify-out/
+

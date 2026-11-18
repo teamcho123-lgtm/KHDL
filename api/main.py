@@ -1,14 +1,22 @@
 """FastAPI service for emotion and calibrated vocal arousal/stress proxy analysis."""
 
 import asyncio
+import csv
 import hmac
+import json
 import logging
 import os
+import re
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
+import soundfile as sf
+import torch
+import torchaudio
 import yaml
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from src.acoustic_extractor import AcousticExtractor
 from src.pipeline import StressAnalysisPipeline
 
 logger = logging.getLogger(__name__)
@@ -26,6 +35,11 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "hparams_inference.yaml"
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
+BENCHMARK_DIR = Path(__file__).resolve().parents[1] / "data" / "collected_benchmark"
+BENCHMARK_WAVS_DIR = BENCHMARK_DIR / "wavs"
+BENCHMARK_MANIFEST_PATH = BENCHMARK_DIR / "benchmark_manifest.json"
+BENCHMARK_METADATA_PATH = BENCHMARK_DIR / "benchmark_metadata.csv"
+benchmark_lock = asyncio.Lock()
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 DEFAULT_ALLOWED_ORIGINS = [
@@ -389,6 +403,206 @@ def get_sample_audio(sample_id: str):
     if not full_path.is_file():
         raise HTTPException(status_code=404, detail="Sample file not found on disk")
     return FileResponse(str(full_path), media_type="audio/wav")
+
+
+ALLOWED_GROUND_TRUTH = {"normal", "stress", "calm", "angry", "fearful", "happy", "sad"}
+
+
+@app.post("/api/v1/benchmarks/submit", dependencies=[Depends(verify_api_access)])
+async def submit_benchmark_sample(
+    file: UploadFile = File(...),
+    user_id: str = Form(...),
+    ground_truth: str = Form(...),
+    context: Optional[str] = Form(None),
+    device: Optional[str] = Form(None),
+    consent: bool = Form(True),
+):
+    """Store an in-the-wild audio recording for speaker-independent benchmark evaluation."""
+    if not consent:
+        raise HTTPException(
+            status_code=400,
+            detail="Người dùng cần đồng ý điều khoản lưu trữ mẫu kiểm chứng ẩn danh.",
+        )
+
+    # 1. Path traversal guard & user_id validation
+    clean_user = user_id.strip()
+    if not re.fullmatch(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", clean_user):
+        raise HTTPException(
+            status_code=400,
+            detail="user_id phải từ 1-64 ký tự chữ, số, dấu gạch dưới hoặc gạch ngang",
+        )
+
+    # 2. Ground truth label validation
+    clean_label = ground_truth.strip().lower()
+    if clean_label not in ALLOWED_GROUND_TRUTH:
+        allowed_str = ", ".join(sorted(ALLOWED_GROUND_TRUTH))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Nhãn ground_truth '{ground_truth}' không hợp lệ. Phải thuộc: {allowed_str}",
+        )
+
+    clean_device = (device.strip()[:60] if device else "web_microphone").replace("\n", " ").replace(",", ";")
+    clean_context = (context.strip()[:120] if context else "unspecified").replace("\n", " ").replace(",", ";")
+
+    # 3. Save upload to temporary file
+    tmp_path = await _save_upload(file)
+    try:
+        # 4. Check duration & basic audio validity
+        try:
+            info = sf.info(tmp_path)
+            duration_s = float(info.duration)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Không đọc được tệp âm thanh: {exc}") from exc
+
+        if duration_s < 1.5:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Thời lượng âm thanh ({duration_s:.1f}s) quá ngắn. Tối thiểu cần 1.5 giây.",
+            )
+        if duration_s > 60.0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Thời lượng âm thanh ({duration_s:.1f}s) quá dài cho một mẫu benchmark. Tối đa 60.0 giây.",
+            )
+
+        # 5. Acoustic validation (Acoustic Quality Safeguard)
+        extractor = pipeline.acoustic_extractor if pipeline else AcousticExtractor()
+        extracted = extractor.extract_features_with_quality(tmp_path)
+        raw_metrics = extracted.get("metrics", {})
+
+        if raw_metrics.get("f0_mean") is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Chất lượng âm thanh không đạt chuẩn Benchmark (không phát hiện được tần số F0 tuần hoàn hoặc bị câm).",
+            )
+
+        # 6. Standardize audio: load with soundfile, mixdown to mono, resample to 16kHz
+        try:
+            sig, sr = sf.read(tmp_path, dtype="float32", always_2d=True)
+            mono_sig = sig.mean(axis=1)
+            if sr != 16000:
+                tensor_sig = torch.from_numpy(mono_sig).float()
+                resampled_tensor = torchaudio.functional.resample(tensor_sig, orig_freq=sr, new_freq=16000)
+                mono_sig = resampled_tensor.numpy()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Lỗi chuẩn hóa âm thanh về 16kHz PCM: {exc}",
+            ) from exc
+
+        # 7. Write normalized WAV atomically
+        BENCHMARK_WAVS_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        unique_suffix = uuid.uuid4().hex[:8]
+        sample_id = f"bm_{clean_user}_{clean_label}_{timestamp_str}_{unique_suffix}"
+        wav_filename = f"{sample_id}.wav"
+        dest_wav_path = BENCHMARK_WAVS_DIR / wav_filename
+
+        temp_dest = dest_wav_path.with_suffix(".tmp.wav")
+        sf.write(str(temp_dest), mono_sig, 16000, format="WAV", subtype="PCM_16")
+        os.replace(str(temp_dest), str(dest_wav_path))
+
+        # 8. Thread-safe atomic manifest and metadata CSV update
+        root_dir = Path(__file__).resolve().parents[1]
+        rel_wav = str(dest_wav_path.relative_to(root_dir)).replace("\\", "/")
+
+        async with benchmark_lock:
+            manifest_data = {}
+            if BENCHMARK_MANIFEST_PATH.is_file():
+                try:
+                    with open(BENCHMARK_MANIFEST_PATH, "r", encoding="utf-8") as mf:
+                        manifest_data = json.load(mf)
+                except Exception:
+                    manifest_data = {}
+
+            manifest_data[sample_id] = {
+                "wav": rel_wav,
+                "duration": round(duration_s, 2),
+                "speaker_id": clean_user,
+                "ground_truth": clean_label,
+                "device": clean_device,
+                "context": clean_context,
+                "acoustic_physics": {
+                    "f0_mean": round(raw_metrics["f0_mean"], 1) if raw_metrics.get("f0_mean") is not None else None,
+                    "f0_std": round(raw_metrics["f0_std"], 1) if raw_metrics.get("f0_std") is not None else None,
+                    "hnr": round(raw_metrics["hnr_db"], 1) if raw_metrics.get("hnr_db") is not None else None,
+                    "jitter": round(raw_metrics["jitter_percent"], 2) if raw_metrics.get("jitter_percent") is not None else None,
+                    "shimmer": round(raw_metrics["shimmer_percent"], 2) if raw_metrics.get("shimmer_percent") is not None else None,
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+            tmp_manifest = BENCHMARK_MANIFEST_PATH.with_suffix(".tmp")
+            with open(tmp_manifest, "w", encoding="utf-8") as mf:
+                json.dump(manifest_data, mf, indent=2, ensure_ascii=False)
+            os.replace(str(tmp_manifest), str(BENCHMARK_MANIFEST_PATH))
+
+            csv_exists = BENCHMARK_METADATA_PATH.is_file()
+            with open(BENCHMARK_METADATA_PATH, "a", newline="", encoding="utf-8") as cf:
+                writer = csv.writer(cf)
+                if not csv_exists:
+                    writer.writerow([
+                        "sample_id", "timestamp", "user_id", "ground_truth",
+                        "duration_s", "f0_mean", "hnr", "device", "context", "filename"
+                    ])
+                writer.writerow([
+                    sample_id,
+                    datetime.now(timezone.utc).isoformat(),
+                    clean_user,
+                    clean_label,
+                    round(duration_s, 2),
+                    round(raw_metrics.get("f0_mean") or 0.0, 1),
+                    round(raw_metrics.get("hnr_db") or 0.0, 1),
+                    clean_device,
+                    clean_context,
+                    wav_filename,
+                ])
+
+        return {
+            "status": "success",
+            "sample_id": sample_id,
+            "filename": wav_filename,
+            "duration_seconds": round(duration_s, 2),
+            "ground_truth": clean_label,
+            "user_id": clean_user,
+            "message": "Đã lưu mẫu kiểm chứng thành công vào tập dữ liệu benchmark.",
+        }
+    finally:
+        _remove_temp(tmp_path)
+
+
+@app.get("/api/v1/benchmarks/stats", dependencies=[Depends(verify_api_access)])
+async def get_benchmark_stats():
+    """Retrieve summary statistics of collected benchmark samples."""
+    async with benchmark_lock:
+        if not BENCHMARK_MANIFEST_PATH.is_file():
+            return {
+                "total_samples": 0,
+                "speakers_count": 0,
+                "speakers": [],
+                "ground_truth_counts": {},
+            }
+        try:
+            with open(BENCHMARK_MANIFEST_PATH, "r", encoding="utf-8") as mf:
+                data = json.load(mf)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail="Không đọc được benchmark manifest") from exc
+
+    speakers = set()
+    label_counts: Dict[str, int] = {}
+    for item in data.values():
+        spk = item.get("speaker_id")
+        if spk:
+            speakers.add(spk)
+        lbl = item.get("ground_truth", "unknown")
+        label_counts[lbl] = label_counts.get(lbl, 0) + 1
+
+    return {
+        "total_samples": len(data),
+        "speakers_count": len(speakers),
+        "speakers": sorted(list(speakers)),
+        "ground_truth_counts": label_counts,
+    }
 
 
 # Mount static frontend files at root (served after API endpoints)

@@ -4,6 +4,7 @@ and normalize audio to 16kHz mono.
 """
 
 import os
+import sys
 import torch
 import torchaudio
 from typing import Optional
@@ -30,10 +31,20 @@ class AudioEnhancer:
             self.device = device
 
         print(f"[AudioEnhancer] Initializing MetricGAN+ on device: {self.device}...")
+        kwargs = {"device": self.device}
+        strategy_kwargs = {}
+        if sys.platform == "win32":
+            try:
+                from speechbrain.utils.fetching import LocalStrategy
+                strategy_kwargs["local_strategy"] = LocalStrategy.COPY
+            except Exception:
+                pass
+
         self.enhancer = SpectralMaskEnhancement.from_hparams(
             source=model_source,
             savedir=savedir,
-            run_opts={"device": self.device},
+            run_opts=kwargs,
+            **strategy_kwargs,
         )
         print("[AudioEnhancer] MetricGAN+ loaded successfully.")
 

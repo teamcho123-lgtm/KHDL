@@ -34,19 +34,58 @@
             <input id="api-key" type="password" placeholder="Để trống nếu chạy cục bộ (loopback)" autocomplete="off" />
           </div>
 
-          <!-- KHU VỰC TẢI TỆP HOẶC KÉO THẢ -->
-          <div class="field">
-            <label for="audio-file">Tệp giọng nói</label>
-            <div id="drop-zone" class="drop-zone">
-              <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="17 8 12 3 7 8"></polyline>
-                <line x1="12" y1="3" x2="12" y2="15"></line>
-              </svg>
-              <p class="drop-text">Kéo thả tệp âm thanh vào đây hoặc <span>chọn tệp</span></p>
-              <input id="audio-file" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg,.webm" />
+          <!-- CHỌN PHƯƠNG THỨC ĐẦU VÀO -->
+          <div class="input-tabs" role="tablist">
+            <button id="tab-upload" type="button" class="tab-btn active" role="tab" aria-selected="true">
+              📁 Tải Tệp Lên
+            </button>
+            <button id="tab-record" type="button" class="tab-btn" role="tab" aria-selected="false">
+              🎙️ Thu Âm Trực Tiếp
+            </button>
+          </div>
+
+          <!-- PHẦN 1: TẢI TỆP HOẶC KÉO THẢ -->
+          <div id="upload-panel" class="tab-panel">
+            <div class="field">
+              <label for="audio-file">Tệp giọng nói</label>
+              <div id="drop-zone" class="drop-zone">
+                <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <p class="drop-text">Kéo thả tệp âm thanh vào đây hoặc <span>chọn tệp</span></p>
+                <input id="audio-file" type="file" accept="audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg,.webm" />
+              </div>
+              <p id="file-meta" class="hint">Hỗ trợ WAV, MP3, M4A, AAC, FLAC, OGG (tối đa 20 MiB, dài đến 300 giây).</p>
             </div>
-            <p id="file-meta" class="hint">Hỗ trợ WAV, MP3, M4A, AAC, FLAC, OGG (tối đa 20 MiB, dài đến 300 giây).</p>
+          </div>
+
+          <!-- PHẦN 2: THU ÂM TRỰC TIẾP QUA MICROPHONE -->
+          <div id="record-panel" class="tab-panel hidden">
+            <div class="field">
+              <label>Ghi âm Microphone (Khuyến nghị 3s - 10s)</label>
+              <div class="record-container">
+                <div class="record-visual-box">
+                  <canvas id="record-canvas" width="300" height="60" class="record-canvas"></canvas>
+                  <div class="record-timer-bar">
+                    <span id="record-status-dot" class="status-dot"></span>
+                    <span id="record-timer" class="record-timer">00:00 / 00:15</span>
+                    <span id="record-hint" class="record-hint">Sẵn sàng thu âm</span>
+                  </div>
+                </div>
+                <div class="record-actions">
+                  <button id="record-toggle-btn" type="button" class="record-main-btn">
+                    <span class="mic-icon">🎙️</span>
+                    <span id="record-btn-text">Bắt đầu thu âm</span>
+                  </button>
+                  <button id="record-cancel-btn" type="button" class="record-sub-btn hidden">
+                    ✕ Hủy bỏ
+                  </button>
+                </div>
+              </div>
+              <p id="record-meta" class="hint">Tự động chuẩn hóa về WAV PCM 16kHz Mono không nén lossy.</p>
+            </div>
           </div>
 
           <!-- AUDIO PLAYER TRỰC TIẾP -->
@@ -98,6 +137,60 @@
           <div style="margin-top:8px;">
             <button id="delete-baseline-button" class="secondary" type="button" style="width:100%;min-height:36px;font-size:0.8rem;">
               🗑️ Xóa Baseline của User ID này
+            </button>
+          </div>
+
+          <!-- ĐÓNG GÓP DỮ LIỆU BENCHMARK TEST (CONTROLLED DATASET) -->
+          <div class="benchmark-toggle-container">
+            <button id="toggle-benchmark-btn" type="button" class="benchmark-pill-btn">
+              <span>💾</span> Đóng góp Mẫu Kiểm chứng (Benchmark Test)
+            </button>
+          </div>
+
+          <div id="benchmark-section" class="benchmark-section hidden">
+            <div class="benchmark-header">
+              <h4>📋 Đóng góp Dữ liệu Benchmark</h4>
+              <span class="badge neutral" id="benchmark-stats-badge">Mẫu: --</span>
+            </div>
+            <p class="benchmark-desc">
+              Lưu âm thanh đang chọn/vừa thu vào tập dữ liệu kiểm nghiệm độc lập người nói (Speaker-Independent).
+            </p>
+
+            <div class="field">
+              <label for="benchmark-ground-truth">Nhãn cảm xúc / kích hoạt (Ground Truth) *</label>
+              <select id="benchmark-ground-truth" required>
+                <option value="normal">Bình thường / Điềm tĩnh (Normal / Calm)</option>
+                <option value="stress">Căng thẳng / Áp lực (Stress / High Arousal)</option>
+                <option value="angry">Giận dữ / Bực tức (Angry)</option>
+                <option value="fearful">Sợ hãi / Hoảng hốt (Fearful)</option>
+                <option value="sad">Buồn bã / Hụt hơi (Sad)</option>
+                <option value="happy">Vui vẻ / Hào hứng (Happy)</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label for="benchmark-device">Thiết bị thu âm</label>
+              <select id="benchmark-device">
+                <option value="built_in_mic">Microphone tích hợp máy tính (Laptop Built-in)</option>
+                <option value="headset_mic">Tai nghe / Headset có dây</option>
+                <option value="bluetooth_mic">Tai nghe không dây Bluetooth</option>
+                <option value="studio_mic">Micro rời chuyên dụng (USB / XLR)</option>
+                <option value="mobile_mic">Điện thoại di động</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label for="benchmark-context">Ngữ cảnh ghi âm (Tùy chọn)</label>
+              <input id="benchmark-context" type="text" maxlength="120" placeholder="Ví dụ: Vừa họp xong, phòng hơi vọng..." />
+            </div>
+
+            <label class="consent-label">
+              <input id="benchmark-consent" type="checkbox" checked required />
+              Đồng ý ẩn danh hóa và lưu trữ mẫu giọng nói này vào tập dữ liệu kiểm thử
+            </label>
+
+            <button id="submit-benchmark-btn" class="primary" type="button" style="margin-top:10px;width:100%;">
+              <span>💾</span> Xác nhận Lưu vào Benchmark
             </button>
           </div>
 
